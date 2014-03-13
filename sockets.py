@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 import flask
-from flask import Flask, request
+from flask import Flask, request, redirect, url_for, make_response
 from flask_sockets import Sockets
 import gevent
 from gevent import queue
@@ -26,29 +26,45 @@ app = Flask(__name__)
 sockets = Sockets(app)
 app.debug = True
 
+class Client:
+    def __init__(self):
+        self.queue = queue.Queue()
+
+    def put(self, v):
+        self.queue.put_nowait(v)
+
+    def get(self):
+        return self.queue.get()
+
 class World:
     def __init__(self):
         self.clear()
         # we've got listeners now!
         self.listeners = list()
         
-    def add_set_listener(self, listener):
+    def add_listener(self, listener):
         self.listeners.append( listener )
+        listener.put( json.dumps( { "world": self.space } ) )
+
+    def remove_listener(self, listener):
+        self.listeners.remove( listener )
 
     def update(self, entity, key, value):
         entry = self.space.get(entity,dict())
         entry[key] = value
         self.space[entity] = entry
-        self.update_listeners( entity )
+        #self.update_listeners( entity ) Don't update right now, otherwise we will be updating 5 times per entity!
 
     def set(self, entity, data):
         self.space[entity] = data
         self.update_listeners( entity )
 
-    def update_listeners(self, entity):
-        '''update the set listeners'''
+    def update_listeners_entity(self, entity):
+        update = dict()
+        update[entity] = self.space[entity]
         for listener in self.listeners:
-            listener(entity, self.get(entity))
+            #listener.put( json.dumps(self.space) )
+            listener.put( json.dumps( update ) )
 
     def clear(self):
         self.space = dict()
@@ -61,27 +77,44 @@ class World:
 
 myWorld = World()        
 
-def set_listener( entity, data ):
-    ''' do something with the update ! '''
 
-myWorld.add_set_listener( set_listener )
-        
-@app.route('/')
-def hello():
-    '''Return something coherent here.. perhaps redirect to /static/index.html '''
-    return None
+#def set_listener( entity, data ):
+#    ''' do something with the update ! '''
 
+#myWorld.add_set_listener( set_listener )
+
+# Data it reads:
+# { entry_id: { key: value, key: value, key etc....} }
 def read_ws(ws,client):
-    '''A greenlet function that reads from the websocket and updates the world'''
-    # XXX: TODO IMPLEMENT ME
-    return None
+    try:
+        while True:
+            msg = ws.receive()
+            if (msg is not None):
+                packet = json.loads(msg)
+                for entityName, newValue in packet.iteritems():
+                    for key, value in newValue.iteritems():
+                        myWorld.update( entityName, key, value )
+                    myWorld.update_listeners_entity(entityName)
+            else:
+                break
+    except:
+        '''Done'''
 
 @sockets.route('/subscribe')
 def subscribe_socket(ws):
-    '''Fufill the websocket URL of /subscribe, every update notify the
-       websocket and read updates from the websocket '''
-    # XXX: TODO IMPLEMENT ME
-    return None
+    client = Client()
+    myWorld.add_listener( client )
+    g = gevent.spawn( read_ws, ws, client )
+    try:
+        while True:
+            # block here
+            msg = client.get()
+            ws.send(msg)
+    except Exception as e:# WebSocketError as e:
+        print "WS Error %s" % e
+    finally:
+        myWorld.remove_listener( client )
+        gevent.kill(g)
 
 
 def flask_post_json():
@@ -94,28 +127,42 @@ def flask_post_json():
     else:
         return json.loads(request.form.keys()[0])
 
+def world_response():
+    data = json.dumps(myWorld.world())
+    response = make_response(data)
+    response.headers['Content-Type'] = 'application/json'
+    return response
+
+def entity_response( entity ):
+    data = json.dumps(myWorld.get( entity ))
+    response = make_response(data)
+    response.headers['Content-Type'] = 'application/json'
+    return response
+
+@app.route("/")
+def hello():
+    return redirect('/static/index.html')
+
 @app.route("/entity/<entity>", methods=['POST','PUT'])
 def update(entity):
-    '''update the entities via this interface'''
-    return None
+    data = flask_post_json()
+    for key, value in data.iteritems():
+        myWorld.update( entity, key, value )
 
-@app.route("/world", methods=['POST','GET'])    
+    return entity_response( entity )
+
+@app.route("/world", methods=['POST','GET'])
 def world():
-    '''you should probably return the world here'''
-    return None
+    return world_response()
 
-@app.route("/entity/<entity>")    
+@app.route("/entity/<entity>")
 def get_entity(entity):
-    '''This is the GET version of the entity interface, return a representation of the entity'''
-    return None
-
+    return entity_response( entity )
 
 @app.route("/clear", methods=['POST','GET'])
 def clear():
-    '''Clear the world out!'''
-    return None
-
-
+    myWorld.clear()
+    return world_response()
 
 if __name__ == "__main__":
     ''' This doesn't work well anymore:

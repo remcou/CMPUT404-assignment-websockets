@@ -1,12 +1,13 @@
 <!DOCTYPE HTML>
 <html> 
   <head> 
-    <title>Websockets Assignment</title> 
+    <title>AJAX Assignment</title> 
     <meta charset="utf-8" /> 
     <meta content='width=device-width; height=device-height; initial-scale=1.0; maximum-scale=1.0; user-scalable=0;' name='viewport' />
     <meta name="viewport" content="width=device-width" />
     <meta name="license" content="
-        Copyright 2013 Google, Abram Hindle
+        Copyright 2014 Remco Uittenbogerd
+        Copyright 2013 Abram Hindle
         
         Licensed under the Apache License, Version 2.0 (the "License");
         you may not use this file except in compliance with the License.
@@ -22,32 +23,29 @@
     "/>
     <script src="json2.js"></script>
   </head> 
-  <body bgcolor="white" height="100%" width="100%"> 
-    <div id="debug"></div>
+  <body bgcolor="black" height="100%" width="100%"> 
     <canvas id="c" width="100%" height="100%" style="-webkit-tap-highlight-color: transparent;"></canvas> 
-
     <script>
-      // Fix me
 var canvas = document.getElementById('c');
 var host = window.location.host;
 var context = canvas.getContext("2d");
 var W = canvas.width  = window.innerWidth-6;
 var H = canvas.height = window.innerHeight-50;
-var wscounter = 0;
-var socket;
-
-function debug(str) {
-    var debugDiv = document.getElementById('debug');
-    debugDiv.innerHTML = "" + str;
-}
-debug("Test");
 
 world = {};
+var socket = null;
+drawNext = true;
 
-//XXX: TODO Make this prettier!
+function resetDrawNextFlag()
+{
+    drawNext = true;
+}
+
+setInterval(resetDrawNextFlag, 1000/30);
+
 function drawCircle(context,entity) {
     with(context) {
-        beginPath();                
+        beginPath();              
         lineWidth = 3;
         var x = entity["x"];
         var y = entity["y"];
@@ -55,6 +53,7 @@ function drawCircle(context,entity) {
         fillStyle = entity["colour"];
         strokeStyle = fillStyle;
         arc(x, y, (entity["radius"])?entity["radius"]:50, 0, 2.0 * Math.PI, false);  
+        fill();
         stroke();                                
     }
 }
@@ -88,6 +87,7 @@ function renderFrame() {
 }
 
 var drawNext = true;
+
 // Signals that there's something to be drawn
 function drawNextFrame() {
     drawNext = true;
@@ -121,15 +121,25 @@ function getPosition(e) {
 	}
 }
 
+
 function addEntity(entity, data) {
+
     world[entity] = data;
-    drawNextFrame(); // (but should we?)
-    //XXX: Send a XHTML Request that updates the entity you just modified!
+    drawNextFrame(); // (but should we?) Yes! Client side prediction!
+
+    send = {}
+    send[entity] = data
+    socket.send( JSON.stringify( send ) );
 }
+
 var counter = 0;
 function addEntityWithoutName(data) {
-    var name = "X"+(counter++)%100;
-    addEntity(name,data);
+    if( drawNext )
+    {
+      var name = "X"+(counter++)%200;
+      addEntity(name,data);
+      drawNext = false;
+    }
 }
 
 // canvas + mouse/touch is complicated 
@@ -212,8 +222,7 @@ mouse = (function() {
             self.lasttouch = e;                                         
             return self.mousemove(e);
 	},
-		                                   
-        // Install the mouse listeners
+	// Install the mouse listeners
 	mouseinstall: function() {
             canvas.addEventListener("mousedown",  self.mousedown, false);
             canvas.addEventListener("mousemove",  self.mousemove, false);
@@ -224,57 +233,87 @@ mouse = (function() {
             canvas.addEventListener("touchend",   self.touchend, false);
 	}
     };
+    // Force install!
     self.mouseinstall();
     return self;
 })();
 
+var colorCount = 0;
+function getColor()
+{
+    colorCount++;
+    if( colorCount%7 == 0 )
+        return 'red'
+    else if( colorCount%7 == 1 )
+        return 'orange'
+    else if( colorCount%7 == 2 )
+        return 'yellow'
+    else if( colorCount%7 == 3 )
+        return 'green'
+    else if( colorCount%7 == 4 )
+        return 'blue'
+    else if( colorCount%7 == 5 )
+        return 'indigo'
+    else
+        return 'violet'
+}
+
 // Add the application specific mouse listeners!
-//XXX: TODO Make these prettier!
 mouse.mousedowners.push(function(x,y,clicked,e) {
-    addEntityWithoutName({'x':x,'y':y,'colour':'blue'});
+    addEntityWithoutName({'x':x,'y':y,'colour':getColor(),'radius':10});
 });
 
 mouse.mouseuppers.push(function(x,y,clicked,e) {
-    addEntityWithoutName({'x':x,'y':y,'colour':'red'});
+    addEntityWithoutName({'x':x,'y':y,'colour':getColor(),'radius':10});
 });
 
 mouse.mousedraggers.push(function(x,y,clicked,e) {
-    addEntityWithoutName({'x':x,'y':y,'colour':'green',
-                          'radius':10});
+    addEntityWithoutName({'x':x,'y':y,'colour':getColor(),'radius':10});
 });
 
-
-function update() {
-    drawFrame();
-}
-
-
-function wsSetup() {
-    var url = "ws://"+host+"/subscribe";   
+window.onload = function() {
+    var host = window.location.host;
+    var url = "ws://"+host+"/subscribe";
     socket = new WebSocket(url);
     socket.onopen = function() {
-        //XXX: TODO What are you going to do here?
     };
+
     socket.onerror = function(msg) {
         debug("WebSocket Error:" + msg.data);
     };
-    socket.onmessage = function(msg) {  
+
+    socket.onmessage = function(msg) {
         try {
-            debug("WebSocket Recv:" + msg.data);
-            //XXX: TODO What are you going to do here?            
+            var worldData = JSON.parse(msg.data);
+            for( var key in worldData )
+            {
+                if( key == "world")
+                {
+                    world = worldData[key];
+                    updateWorld();
+                }
+                else
+                {
+                    world[key] = worldData[key];
+                    updateWorld();
+                }
+            }
         } catch (e) {
             alert("socket on message: " + e);
         }
-    }; 
-}
+    };
 
-wsSetup();
+    function debug(str) {
+        var debugDiv = document.getElementById('debug');
+        debugDiv.innerHTML = "" + str;
+    };
 
-
-
-
-// 30 frames per second
-setInterval( update, 1000/30.0);
+    function updateWorld()
+    {
+        drawNextFrame();
+        drawFrame();
+    }
+};
 
 
     </script>
